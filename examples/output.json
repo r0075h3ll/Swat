@@ -1,0 +1,10 @@
+{
+    "input_domain": "examplebrand.com",
+    "results": [
+        {
+            "domain": "example-brand-pte--ltd-2256.workers.dev",
+            "similarity": 0.5772,
+            "levenshtein_distance": 25
+        }
+    ]
+}
