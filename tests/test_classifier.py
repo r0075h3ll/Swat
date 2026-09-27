@@ -6,10 +6,12 @@ from swat import classifier
 
 
 class _FakeResponse:
-    def __init__(self, status_code=200, body=b"", headers=None):
+    def __init__(self, status_code=200, body=b"", headers=None, read_error=None):
         self.status_code = status_code
         self._body = body
+        self._read_error = read_error
         self.headers = headers or {"Content-Type": "text/html"}
+        self.closed = False
 
     @property
     def is_redirect(self):
@@ -20,10 +22,19 @@ class _FakeResponse:
         return False
 
     def iter_content(self, chunk_size):
+        if self._read_error:
+            raise self._read_error
         yield self._body
 
     def close(self):
-        pass
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
 
 
 def _html(body: str, **headers) -> _FakeResponse:
@@ -37,6 +48,35 @@ def _fetching(get, public=True):
         mock.patch.object(classifier.session, "get", side_effect=get),
         mock.patch.object(classifier, "_resolves_to_public_address", return_value=public),
     )
+
+
+def test_fetch_text_treats_a_truncated_body_as_unreachable():
+    """A reset mid-read raises from iter_content, not from get(). These pages
+    are attacker-supplied, so this must not propagate out of find_lookalikes."""
+    truncated = _FakeResponse(200, b"", read_error=requests.exceptions.ChunkedEncodingError("reset"))
+
+    with (
+        _fetching(lambda *a, **k: truncated)[0],
+        _fetching(lambda *a, **k: truncated)[1],
+    ):
+        assert classifier.fetch_text("paypal.com") is None
+
+    assert truncated.closed, "the response must be released even when the read fails"
+
+
+def test_fetch_text_falls_back_to_http_after_a_truncated_https_body():
+    seen = []
+
+    def fake_get(url, **_kwargs):
+        seen.append(url)
+        if url.startswith("https"):
+            return _FakeResponse(200, b"", read_error=requests.exceptions.ConnectionError("reset"))
+        return _html("<p>plain http works</p>")
+
+    with _fetching(fake_get)[0], _fetching(fake_get)[1]:
+        assert classifier.fetch_text("example.com") == "plain http works"
+
+    assert seen == ["https://example.com", "http://example.com"]
 
 
 def test_fetch_text_strips_tags_scripts_and_styles():

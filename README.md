@@ -33,8 +33,8 @@ Flagged domains come out of Certificate Transparency logs, which anyone can
 write to, so those fetches are treated as untrusted: a candidate that resolves
 to a private, loopback, or link-local address is skipped rather than fetched
 from your network, redirects are checked hop by hop, and the response body is
-capped. Only `text/html` is decoded, and always as UTF-8 unless the response
-names a charset.
+capped. Only `text/html` and `application/xhtml+xml` are decoded, and always as
+UTF-8 unless the response names a charset.
 
 ## crt.sh limitations
 

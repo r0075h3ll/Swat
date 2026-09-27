@@ -60,32 +60,30 @@ def _get(url: str, timeout: int) -> tuple[bytes, str] | None:
             return None
 
         try:
-            response = session.get(url, timeout=timeout, stream=True, allow_redirects=False)
+            with session.get(url, timeout=timeout, stream=True, allow_redirects=False) as response:
+                if response.is_redirect or response.is_permanent_redirect:
+                    location = response.headers.get("Location")
+                    if not location:
+                        return None
+                    url = urljoin(url, location)
+                    continue
+
+                if response.status_code >= 400:
+                    return None
+
+                chunks, size = [], 0
+                for chunk in response.iter_content(8192):
+                    size += len(chunk)
+                    if size > MAX_FETCH_BYTES:
+                        return None
+                    chunks.append(chunk)
+
+                return b"".join(chunks), response.headers.get("Content-Type", "")
         except requests.exceptions.RequestException:
+            # A truncated or reset body raises here rather than at get(). These
+            # pages are attacker-supplied, so a partial read is the expected
+            # case, not a rare one, and must not abort the run.
             return None
-
-        if response.is_redirect or response.is_permanent_redirect:
-            location = response.headers.get("Location")
-            response.close()
-            if not location:
-                return None
-            url = urljoin(url, location)
-            continue
-
-        if response.status_code >= 400:
-            response.close()
-            return None
-
-        chunks, size = [], 0
-        for chunk in response.iter_content(8192):
-            size += len(chunk)
-            if size > MAX_FETCH_BYTES:
-                response.close()
-                return None
-            chunks.append(chunk)
-        response.close()
-
-        return b"".join(chunks), response.headers.get("Content-Type", "")
 
     return None
 
