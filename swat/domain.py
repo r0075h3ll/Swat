@@ -61,5 +61,13 @@ def search_label(domain: str) -> str:
     Falls back to the leading label when the public suffix list does not
     recognise the TLD, which is all splitting on '.' could do anyway.
     """
-    registrable = _extract(domain).top_domain_under_public_suffix
+    registrable = registrable_domain(domain)
     return registrable.partition(".")[0] or domain.split(".")[0]
+
+
+def registrable_domain(domain: str) -> str:
+    """The public-suffix-aware registrable domain: 'www.paypal.com' -> 'paypal.com'.
+
+    Falls back to the input unchanged when the TLD is not in the list.
+    """
+    return _extract(domain).top_domain_under_public_suffix or domain

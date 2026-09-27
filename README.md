@@ -27,7 +27,10 @@ A candidate is flagged if it clears either threshold.
 Optionally, pass a reference URL (`-r`) for the real brand's homepage. SWAT
 fetches it once, then each flagged domain's own homepage, and scores content
 similarity via the same model. Catches active phishing clones; an
-unreachable domain just gets no `content_similarity` field.
+unreachable domain just gets no `content_similarity` field. The comparison
+covers the head of each page only, because the embedding model takes at most
+256 word pieces, so a clone whose distinguishing text sits below the fold
+will score low.
 
 Flagged domains come out of Certificate Transparency logs, which anyone can
 write to, so those fetches are treated as untrusted: a candidate that resolves
