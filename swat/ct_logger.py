@@ -1,6 +1,8 @@
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC
+from email.utils import parsedate_to_datetime
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -9,6 +11,19 @@ CRT_SH_URL = "https://crt.sh/"
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 2
 RATE_LIMIT_BACKOFF_SECONDS = 5
+
+# crt.sh can answer a 429 with Retry-After: 3600. Honouring that verbatim parks
+# a pool worker for an hour, in a tool whose request timeout is 30 seconds.
+MAX_RETRY_AFTER_SECONDS = 60
+
+# split_variants yields one query per character, so a long brand fans out
+# without limit. The cap bounds the worst-case wait; labels at or under
+# MAX_QUERY_VARIANTS characters are unaffected.
+MAX_QUERY_VARIANTS = 16
+
+# crt.sh has no pagination, so "%shortlabel%" can match a large share of all
+# CT. Trust Content-Length to keep that from landing in memory whole.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 # crt.sh is unreliable for a single unbroken token (e.g. "examplebrand") but
 # far more reliable for space-separated multi-word queries (e.g. "example
@@ -19,10 +34,40 @@ RATE_LIMIT_BACKOFF_SECONDS = 5
 VARIANT_MAX_RETRIES = 1
 VARIANT_RETRY_BACKOFF_SECONDS = 1
 FANOUT_CONCURRENCY = 5
-MAX_CONCURRENT_REQUESTS = 50
 
 session = requests.session()
-session.mount("https://", HTTPAdapter(pool_maxsize=MAX_CONCURRENT_REQUESTS))
+session.mount("https://", HTTPAdapter(pool_maxsize=FANOUT_CONCURRENCY))
+
+
+def _retry_after_seconds(header: str) -> float:
+    """Retry-After is either delta-seconds or an HTTP-date (RFC 7231). Clamp
+    whatever comes back so neither form can park a worker indefinitely."""
+    try:
+        seconds = float(header)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(header)
+        except (TypeError, ValueError):
+            return RATE_LIMIT_BACKOFF_SECONDS
+        if when is None:
+            return RATE_LIMIT_BACKOFF_SECONDS
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        seconds = when.timestamp() - time.time()
+
+    return min(max(seconds, 0.0), MAX_RETRY_AFTER_SECONDS)
+
+
+def _reject_oversized(response: requests.Response) -> None:
+    """crt.sh serves every match for a query in one body, so a short label can
+    come back enormous. A missing or bogus Content-Length is left alone rather
+    than guessed at, since crt.sh sets it accurately and a lie is not the
+    failure mode worth engineering for here."""
+    content_length = response.headers.get("Content-Length")
+    if content_length and content_length.isdigit() and int(content_length) > MAX_RESPONSE_BYTES:
+        raise requests.exceptions.RequestException(
+            f"crt.sh response is {content_length} bytes, over the {MAX_RESPONSE_BYTES} byte cap"
+        )
 
 
 def get_ct_logs(
@@ -43,13 +88,16 @@ def get_ct_logs(
 
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After")
-                sleep_seconds = float(retry_after) if retry_after else RATE_LIMIT_BACKOFF_SECONDS
+                sleep_seconds = (
+                    _retry_after_seconds(retry_after) if retry_after else RATE_LIMIT_BACKOFF_SECONDS
+                )
                 last_error = requests.exceptions.HTTPError(
                     f"429 Too Many Requests (retry-after={retry_after or 'none'})"
                 )
                 continue
 
             response.raise_for_status()
+            _reject_oversized(response)
             return response.json()
         except (requests.exceptions.RequestException, ValueError) as e:
             last_error = e
@@ -68,9 +116,15 @@ def get_ct_logs_for_label(root_label: str) -> list[dict]:
     """Query crt.sh with the bare label and every single-split variant of it,
     up to FANOUT_CONCURRENCY at a time, merging all non-empty responses. Each
     variant gets a light retry budget since redundancy comes from trying many
-    query shapes, not from retrying any single one."""
-    queries = [f"%{root_label}%", *split_variants(root_label)]
+    query shapes, not from retrying any single one.
+
+    Raises RuntimeError when every query fails. Returning an empty list there
+    would be indistinguishable from a target that genuinely has no lookalikes,
+    which is the one thing this tool must not get wrong.
+    """
+    queries = [f"%{root_label}%", *split_variants(root_label)[: MAX_QUERY_VARIANTS - 1]]
     merged: dict[object, dict] = {}
+    succeeded = 0
 
     with ThreadPoolExecutor(max_workers=min(FANOUT_CONCURRENCY, len(queries))) as executor:
         futures = {
@@ -89,9 +143,19 @@ def get_ct_logs_for_label(root_label: str) -> list[dict]:
             except RuntimeError:
                 continue
 
+            succeeded += 1
             for entry in entries:
-                key = entry.get("id", json.dumps(entry, sort_keys=True))
+                # A present-but-null id is not a usable key; .get's default only
+                # fires on an absent one, which would collapse every such entry
+                # onto a single None slot.
+                key = entry.get("id") or json.dumps(entry, sort_keys=True)
                 merged[key] = entry
+
+    if not succeeded:
+        raise RuntimeError(
+            f"all {len(queries)} crt.sh queries for '{root_label}' failed, so no result "
+            "can be reported either way"
+        )
 
     return list(merged.values())
 

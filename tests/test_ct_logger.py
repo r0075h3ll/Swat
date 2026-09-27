@@ -1,7 +1,9 @@
+import email.utils
 import threading
 import time
 from unittest import mock
 
+import pytest
 import requests
 
 from swat import ct_logger
@@ -123,6 +125,84 @@ def test_get_ct_logs_for_label_caps_concurrency():
         ct_logger.get_ct_logs_for_label("examplebrand")
 
     assert peak["max"] <= ct_logger.FANOUT_CONCURRENCY
+
+
+def test_get_ct_logs_clamps_an_absurd_retry_after():
+    calls = {"n": 0}
+
+    def fake_get(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _FakeResponse(429, headers={"Retry-After": "3600"})
+        return _FakeResponse(200, [{"id": 1}])
+
+    slept = []
+    with (
+        mock.patch.object(ct_logger.session, "get", side_effect=fake_get),
+        mock.patch.object(ct_logger.time, "sleep", side_effect=slept.append),
+    ):
+        result = ct_logger.get_ct_logs("q", max_retries=1, backoff_seconds=10)
+
+    assert result == [{"id": 1}]
+    assert slept == [ct_logger.MAX_RETRY_AFTER_SECONDS], "an hour-long Retry-After must be clamped"
+
+
+def test_retry_after_accepts_an_http_date():
+    when = email.utils.formatdate(time.time() + 30, usegmt=True)
+    assert 25 <= ct_logger._retry_after_seconds(when) <= 35
+
+
+def test_retry_after_falls_back_when_unparseable():
+    assert ct_logger._retry_after_seconds("not a date") == ct_logger.RATE_LIMIT_BACKOFF_SECONDS
+
+
+def test_get_ct_logs_rejects_an_oversized_response():
+    huge = {"Content-Length": str(ct_logger.MAX_RESPONSE_BYTES + 1)}
+    with (
+        mock.patch.object(ct_logger.session, "get", return_value=_FakeResponse(200, [{"id": 1}], huge)),
+        pytest.raises(RuntimeError, match="over the"),
+    ):
+        ct_logger.get_ct_logs("q", max_retries=0, backoff_seconds=0.01)
+
+
+def test_get_ct_logs_for_label_keeps_entries_with_a_null_id():
+    def fake_get_ct_logs(query, **_kwargs):
+        if "fun" in query:
+            return [
+                {"id": None, "common_name": "a.com"},
+                {"id": None, "common_name": "b.com"},
+            ]
+        return []
+
+    with mock.patch.object(ct_logger, "get_ct_logs", side_effect=fake_get_ct_logs):
+        result = ct_logger.get_ct_logs_for_label("fun")
+
+    names = sorted(entry["common_name"] for entry in result)
+    assert names == ["a.com", "b.com"], "null ids must not collapse onto one merge slot"
+
+
+def test_get_ct_logs_for_label_caps_the_number_of_queries():
+    seen = []
+
+    def fake_get_ct_logs(query, **_kwargs):
+        seen.append(query)
+        return []
+
+    with mock.patch.object(ct_logger, "get_ct_logs", side_effect=fake_get_ct_logs):
+        ct_logger.get_ct_logs_for_label("a" * 40)
+
+    assert len(seen) == ct_logger.MAX_QUERY_VARIANTS
+
+
+def test_get_ct_logs_for_label_raises_when_every_query_fails():
+    def fake_get_ct_logs(_query, **_kwargs):
+        raise RuntimeError("crt.sh request failed")
+
+    with (
+        mock.patch.object(ct_logger, "get_ct_logs", side_effect=fake_get_ct_logs),
+        pytest.raises(RuntimeError, match="all 3 crt.sh queries"),
+    ):
+        ct_logger.get_ct_logs_for_label("fun")
 
 
 def test_log_domains_handles_explicit_null_fields():
