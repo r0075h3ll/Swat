@@ -11,9 +11,10 @@ Levenshtein distance to surface typosquats and look-alike domains.
 crt.sh indexes Certificate Transparency logs: every domain a CA has issued a
 cert for, since ~2013. Its identity search is unreliable for a single
 unbroken word (`examplebrand`) but consistent for a real word-boundary
-split (`example brand`). Since a domain label has no spaces, SWAT queries
-the bare label plus every single-split variant of it, up to 5 at a time, and
-merges every response that succeeds. Then it ranks the results:
+split (`example brand`). Since a domain label has no spaces, SWAT takes the
+registrable label of the target (`paypal` for `www.paypal.com`), then queries
+crt.sh with it plus every single-split variant, up to 5 at a time, and merges
+every response that succeeds. Then it ranks the results:
 
 - **Cosine similarity** (sentence embeddings) catches semantically close
   names that don't share characters.
@@ -29,8 +30,8 @@ unreachable domain just gets no `content_similarity` field.
 
 ## crt.sh limitations
 
-Verified directly against live crt.sh (it has no documentation beyond its
-own search form); full detail and evidence in `DECISIONS.md`.
+Verified directly against live crt.sh, which has no documentation beyond its
+own search form.
 
 - **Flaky.** The identical request can return real data, `404`, `502`, or an
   empty `200` seconds apart. SWAT retries with backoff and warns when every
@@ -68,7 +69,7 @@ uv run python3 -m swat -d example.com -o output.json
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-d` | Target domain (required) | |
+| `-d` | Target domain (required). IDN targets are accepted and normalised to their A-label form. IP literals are rejected. | |
 | `-s` | Minimum cosine similarity to flag a candidate | `0.5` |
 | `-l` | Maximum Levenshtein distance to flag a candidate | `3` |
 | `-r` | Reference URL for content-similarity classification (optional) | none |
@@ -91,7 +92,7 @@ request to `main`.
 
 - Option to choose between different embedding models
 - Replace the `-r` content-similarity heuristic with a classifier actually
-  trained on brand data (the original intent; see `DECISIONS.md`)
+  trained on brand data
 
 ## License
 
