@@ -2,6 +2,7 @@ import ipaddress
 import re
 from urllib.parse import urlsplit
 
+import idna
 import tldextract
 
 _LABEL = r"(?!-)[a-z0-9-]{1,63}(?<!-)"
@@ -16,7 +17,7 @@ _extract = tldextract.TLDExtract(suffix_list_urls=())
 def normalize_domain(raw: str) -> str:
     """Normalize CLI input into a bare ASCII (A-label) domain, e.g.
     'https://Example.com/path' -> 'example.com', 'пример.рф' ->
-    'xn--e1afmkfd.xn--p1ai'.
+    'xn--e1afmkfd.xn--p1ai', 'faß.de' -> 'xn--fa-hia.de'.
 
     Raises ValueError on anything that doesn't reduce to a plausible fully
     qualified domain name (argparse turns that into a clean usage error).
@@ -34,8 +35,11 @@ def normalize_domain(raw: str) -> str:
     host = host.rstrip(".")
 
     try:
-        host = host.encode("idna").decode("ascii")
-    except UnicodeError:
+        # idna.encode(uts46=True), not str.encode("idna"). The stdlib codec is
+        # IDNA2003 and rewrites labels: faß.de becomes fass.de, so the tool
+        # would monitor a different domain than the one asked for.
+        host = idna.encode(host, uts46=True).decode("ascii")
+    except idna.IDNAError:
         raise ValueError(f"{original!r} {_INVALID}") from None
 
     try:

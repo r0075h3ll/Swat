@@ -19,6 +19,12 @@ from swat.domain import normalize_domain, search_label
         # only ever sees ASCII.
         ("пример.рф", "xn--e1afmkfd.xn--p1ai"),
         ("XN--PYPL-53D.com", "xn--pypl-53d.com"),
+        # IDNA2003's nameprep maps these to different labels; IDNA2008 does not.
+        # A wrong mapping here means monitoring a domain nobody asked about.
+        ("faß.de", "xn--fa-hia.de"),
+        ("straße.de", "xn--strae-oqa.de"),
+        ("ẞ.de", "xn--zca.de"),
+        ("ς.gr", "xn--3xa.gr"),
     ],
 )
 def test_normalizes_to_bare_domain(raw, expected):
