@@ -1,4 +1,5 @@
 import json
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC
@@ -55,14 +56,20 @@ def _retry_after_seconds(header: str) -> float:
             when = when.replace(tzinfo=UTC)
         seconds = when.timestamp() - time.time()
 
+    if math.isnan(seconds):
+        # min/max hand NaN straight back, and time.sleep(nan) raises ValueError
+        # outside the retry loop's own except clause.
+        return RATE_LIMIT_BACKOFF_SECONDS
+
     return min(max(seconds, 0.0), MAX_RETRY_AFTER_SECONDS)
 
 
 def _reject_oversized(response: requests.Response) -> None:
     """crt.sh serves every match for a query in one body, so a short label can
-    come back enormous. A missing or bogus Content-Length is left alone rather
-    than guessed at, since crt.sh sets it accurately and a lie is not the
-    failure mode worth engineering for here."""
+    come back enormous. Callers must stream the response, otherwise the body is
+    already buffered by the time this runs. A missing or bogus Content-Length is
+    left alone rather than guessed at, since crt.sh sets it accurately and a lie
+    is not the failure mode worth engineering for here."""
     content_length = response.headers.get("Content-Length")
     if content_length and content_length.isdigit() and int(content_length) > MAX_RESPONSE_BYTES:
         raise requests.exceptions.RequestException(
@@ -84,21 +91,25 @@ def get_ct_logs(
         sleep_seconds = 0.0
 
         try:
-            response = session.get(CRT_SH_URL, params={"q": query, "output": "json"}, timeout=30)
+            # stream=True so _reject_oversized sees the headers before requests
+            # has buffered the body. Without it the cap only rejects a response
+            # that is already in memory.
+            with session.get(
+                CRT_SH_URL, params={"q": query, "output": "json"}, timeout=30, stream=True
+            ) as response:
+                if response.status_code == 429:
+                    retry_after = response.headers.get("Retry-After")
+                    sleep_seconds = (
+                        _retry_after_seconds(retry_after) if retry_after else RATE_LIMIT_BACKOFF_SECONDS
+                    )
+                    last_error = requests.exceptions.HTTPError(
+                        f"429 Too Many Requests (retry-after={retry_after or 'none'})"
+                    )
+                    continue
 
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After")
-                sleep_seconds = (
-                    _retry_after_seconds(retry_after) if retry_after else RATE_LIMIT_BACKOFF_SECONDS
-                )
-                last_error = requests.exceptions.HTTPError(
-                    f"429 Too Many Requests (retry-after={retry_after or 'none'})"
-                )
-                continue
-
-            response.raise_for_status()
-            _reject_oversized(response)
-            return response.json()
+                response.raise_for_status()
+                _reject_oversized(response)
+                return response.json()
         except (requests.exceptions.RequestException, ValueError) as e:
             last_error = e
             sleep_seconds = backoff_seconds * 2**attempt

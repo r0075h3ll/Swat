@@ -23,6 +23,12 @@ class _FakeResponse:
         self._body = body
         self.headers = headers or {}
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
     def raise_for_status(self):
         if self.status_code >= 400:
             raise requests.exceptions.HTTPError(f"{self.status_code} error")
@@ -154,6 +160,19 @@ def test_retry_after_accepts_an_http_date():
 
 def test_retry_after_falls_back_when_unparseable():
     assert ct_logger._retry_after_seconds("not a date") == ct_logger.RATE_LIMIT_BACKOFF_SECONDS
+
+
+def test_retry_after_rejects_nan():
+    # min/max pass NaN through, and time.sleep(nan) raises ValueError from
+    # outside the retry loop's except clause, which would kill the whole run.
+    assert ct_logger._retry_after_seconds("nan") == ct_logger.RATE_LIMIT_BACKOFF_SECONDS
+
+
+def test_get_ct_logs_streams_so_the_size_cap_sees_headers_first():
+    with mock.patch.object(ct_logger.session, "get", return_value=_FakeResponse(200, [{"id": 1}])) as mocked:
+        assert ct_logger.get_ct_logs("q", max_retries=0) == [{"id": 1}]
+
+    assert mocked.call_args.kwargs["stream"] is True
 
 
 def test_get_ct_logs_rejects_an_oversized_response():
