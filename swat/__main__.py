@@ -71,14 +71,17 @@ def find_lookalikes(args: argparse.Namespace) -> dict:
     if not candidates:
         return {"input_domain": domain, "results": []}
 
-    target_emb = model.encode(domain)
+    # Score against the registrable domain, not the input, so it matches what
+    # the crt.sh query was built from. Levenshtein runs on raw character counts,
+    # so "www." alone pushes a distance-1 typosquat past the default threshold.
+    target_emb = model.encode(target_registrable)
     candidate_embs = model.encode(candidates)
     similarities = util.cos_sim(target_emb, candidate_embs)[0]
 
     results = []
     for candidate, score in zip(candidates, similarities, strict=True):
         similarity = score.item()
-        edit_distance = levenshtein_distance(domain, candidate)
+        edit_distance = levenshtein_distance(target_registrable, candidate)
 
         if similarity >= args.sim_thres or edit_distance <= args.max_distance:
             results.append(
