@@ -168,11 +168,42 @@ def test_retry_after_rejects_nan():
     assert ct_logger._retry_after_seconds("nan") == ct_logger.RATE_LIMIT_BACKOFF_SECONDS
 
 
-def test_get_ct_logs_streams_so_the_size_cap_sees_headers_first():
-    with mock.patch.object(ct_logger.session, "get", return_value=_FakeResponse(200, [{"id": 1}])) as mocked:
+class _OrderTrackingResponse(_FakeResponse):
+    """Records whether the body was pulled before the size cap ran."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.body_read = False
+
+    def json(self):
+        self.body_read = True
+        return super().json()
+
+
+def test_get_ct_logs_checks_the_size_cap_before_reading_the_body():
+    """stream=True is not the property that matters on its own. What matters is
+    that _reject_oversized runs before json() pulls the body into memory."""
+    response = _OrderTrackingResponse(200, [{"id": 1}])
+
+    with mock.patch.object(ct_logger.session, "get", return_value=response) as mocked:
         assert ct_logger.get_ct_logs("q", max_retries=0) == [{"id": 1}]
 
     assert mocked.call_args.kwargs["stream"] is True
+    assert response.body_read is True, "the body should be read once the cap has passed"
+
+
+def test_get_ct_logs_never_reads_the_body_when_it_is_oversized():
+    response = _OrderTrackingResponse(
+        200, [{"id": 1}], {"Content-Length": str(ct_logger.MAX_RESPONSE_BYTES + 1)}
+    )
+
+    with (
+        mock.patch.object(ct_logger.session, "get", return_value=response),
+        pytest.raises(RuntimeError, match="over the"),
+    ):
+        ct_logger.get_ct_logs("q", max_retries=0, backoff_seconds=0.01)
+
+    assert response.body_read is False, "an over-cap body must never be buffered"
 
 
 def test_get_ct_logs_rejects_an_oversized_response():
