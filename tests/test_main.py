@@ -64,6 +64,7 @@ def test_find_lookalikes_filters_sorts_and_normalizes_input(tmp_path):
             "similarity": 0.2,
             "levenshtein_distance": 1,
             "levenshtein_ratio": 0.1667,
+            "brand_in_hostname": False,
         },
     ]
 
@@ -92,6 +93,7 @@ def test_find_lookalikes_scores_against_the_registrable_label():
             "similarity": 0.6,
             "levenshtein_distance": 1,
             "levenshtein_ratio": 0.1667,
+            "brand_in_hostname": False,
         },
     ]
 
@@ -351,18 +353,56 @@ def test_default_requires_both_signals_and_any_falls_back_to_or():
 
 
 def test_edit_ratio_normalises_by_the_longer_label_length():
-    """A distance of 2 is roughly a third of a 6-character label and about a
-    tenth of a 20-character one. An absolute cap does not distinguish those
-    cases; a ratio cap does."""
+    """A distance of 1 is a sixth of a 6-character label and a fifteenth of a
+    15-character one. An absolute cap does not distinguish those cases; a ratio
+    cap does. The two candidates are chosen to share the character shape and
+    not contain the target label as a substring, so brand-in-hostname does not
+    also flag the longer one."""
     fake_ct_response = [
-        # Distance 2 vs 'paypal' (length 6): ratio 2/6 ≈ 0.33
-        {"common_name": "paypa11.com", "name_value": "paypa11.com"},
-        # Distance 2 vs 'paypal' (candidate label 'paypalholdingsintl' length 18):
-        # ratio 12/18 ≈ 0.67 for the label pair, so it falls out even though
-        # it lives on 20 characters of shared context.
-        {"common_name": "paypalholdingsintl.com", "name_value": "paypalholdingsintl.com"},
+        # 'brandx' vs 'brandy' (length 6): distance 1, ratio 1/6 ≈ 0.17 → flagged
+        {"common_name": "brandy.com", "name_value": "brandy.com"},
+        # 'brandx' vs 'brandy-holdings' (length 15): distance 10, ratio 10/15 ≈ 0.67 → dropped
+        {"common_name": "brandy-holdings.com", "name_value": "brandy-holdings.com"},
     ]
-    sim_by_domain = {"paypa11": 0.9, "paypalholdingsintl": 0.9}
+    sim_by_domain = {"brandy": 0.9, "brandy-holdings": 0.9}
+
+    parser = swat_main.build_parser()
+    args = parser.parse_args(["-d", "brandx.com"])
+
+    with (
+        mock.patch("swat.__main__.get_ct_logs_for_label", return_value=fake_ct_response),
+        mock.patch("swat.__main__.SentenceTransformer", return_value=_fake_model(sim_by_domain)),
+        mock.patch("swat.__main__.util", _FakeUtil()),
+    ):
+        result = swat_main.find_lookalikes(args)
+
+    flagged = {r["domain"]: r["levenshtein_ratio"] for r in result["results"]}
+    assert "brandy.com" in flagged
+    assert flagged["brandy.com"] < 0.35
+    assert "brandy-holdings.com" not in flagged
+
+
+def test_max_edit_ratio_rejects_out_of_range_values():
+    parser = swat_main.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["-d", "example.com", "-l", "3"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["-d", "example.com", "-l", "-0.1"])
+
+
+def test_brand_in_hostname_flags_subdomain_shapes_thresholds_would_miss():
+    """Label-only scoring throws away the subdomain context that used to catch
+    brand-in-subdomain candidates. The substring signal restores that class:
+    'paypal-secure.evil.com' scores as label 'evil' and fails both thresholds,
+    but the brand token is right there in the hostname."""
+    fake_ct_response = [
+        {"common_name": "paypal-secure.evil.com", "name_value": "paypal-secure.evil.com"},
+        {"common_name": "login.paypal.com.secure-login.tk", "name_value": "login.paypal.com.secure-login.tk"},
+        {"common_name": "unrelated.com", "name_value": "unrelated.com"},
+    ]
+    # Deliberately low similarity on the labels: neither would flag on
+    # thresholds alone, only the substring signal keeps them in.
+    sim_by_domain = {"evil": 0.1, "secure-login": 0.1, "unrelated": 0.1}
 
     parser = swat_main.build_parser()
     args = parser.parse_args(["-d", "paypal.com"])
@@ -374,15 +414,7 @@ def test_edit_ratio_normalises_by_the_longer_label_length():
     ):
         result = swat_main.find_lookalikes(args)
 
-    flagged = {r["domain"]: r["levenshtein_ratio"] for r in result["results"]}
-    assert "paypa11.com" in flagged
-    assert flagged["paypa11.com"] < 0.35
-    assert "paypalholdingsintl.com" not in flagged
-
-
-def test_max_edit_ratio_rejects_out_of_range_values():
-    parser = swat_main.build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["-d", "example.com", "-l", "3"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["-d", "example.com", "-l", "-0.1"])
+    by_domain = {r["domain"]: r for r in result["results"]}
+    assert by_domain["paypal-secure.evil.com"]["brand_in_hostname"] is True
+    assert by_domain["login.paypal.com.secure-login.tk"]["brand_in_hostname"] is True
+    assert "unrelated.com" not in by_domain

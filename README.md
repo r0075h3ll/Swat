@@ -38,6 +38,13 @@ acceptable — for example when scanning for very short typosquats where the
 edit ratio is expected to be small enough that similarity is doing most of
 the work.
 
+Independently of the thresholds, a candidate whose hostname contains the
+target label as a substring is flagged and marked `brand_in_hostname: true`.
+`paypal-secure.evil.com` scores as `evil` against `paypal` under label-only
+comparison and fails both thresholds, but the brand token is right there in
+the SAN — brand-in-subdomain is one of the most common shapes in CT SAN
+lists, and a CT-log monitor exists to catch it.
+
 Optionally, pass a reference URL (`-r`) for the real brand's homepage. SWAT
 fetches it once, then each flagged domain's own homepage, and scores content
 similarity via the same model. Catches active phishing clones; an
@@ -103,7 +110,8 @@ uv run python3 -m swat -d example.com -o output.json
 | `-o` | Output file, or `stdout` | `stdout` |
 
 Output is JSON: `{"input_domain": ..., "results": [{"domain", "similarity",
-"levenshtein_distance", "levenshtein_ratio", (optional) "content_similarity"}]}`.
+"levenshtein_distance", "levenshtein_ratio", "brand_in_hostname", (optional)
+"content_similarity"}]}`.
 
 ## Development
 

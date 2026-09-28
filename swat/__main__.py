@@ -120,7 +120,16 @@ def find_lookalikes(args: argparse.Namespace) -> dict:
         # signals; --any restores the old OR behaviour for callers who want it.
         sim_hit = similarity >= args.sim_thres
         edit_hit = edit_ratio <= args.max_edit_ratio
-        flagged = sim_hit or edit_hit if args.match_any else sim_hit and edit_hit
+        threshold_hit = (sim_hit or edit_hit) if args.match_any else (sim_hit and edit_hit)
+
+        # Brand-in-hostname is the shape a CT monitor exists to catch, and
+        # scoring labels alone throws away the subdomain context that used to
+        # surface it: `paypal-secure.evil.com` scores as 'evil' against
+        # 'paypal' and fails both thresholds. A substring hit is enough to
+        # flag on its own, and reported alongside the numeric signals so a
+        # reviewer can see what triggered the row.
+        brand_in_hostname = target_label in candidate
+        flagged = threshold_hit or brand_in_hostname
 
         if flagged:
             results.append(
@@ -129,6 +138,7 @@ def find_lookalikes(args: argparse.Namespace) -> dict:
                     "similarity": round(similarity, 4),
                     "levenshtein_distance": edit_distance,
                     "levenshtein_ratio": round(edit_ratio, 4),
+                    "brand_in_hostname": brand_in_hostname,
                 }
             )
 
