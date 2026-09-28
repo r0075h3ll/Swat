@@ -19,10 +19,24 @@ results:
 
 - **Cosine similarity** (sentence embeddings) catches semantically close
   names that don't share characters.
-- **Levenshtein distance** catches character-level typosquats
-  (`paypa1.com` for `paypal.com`) that embeddings tend to miss.
+- **Levenshtein distance**, normalised by the longer label length, catches
+  character-level typosquats (`paypa1.com` for `paypal.com`) that embeddings
+  tend to miss. The ratio is used so `-l` means the same thing on a 6-char
+  brand as on a 20-char one; the raw distance is still reported.
 
-A candidate is flagged if it clears either threshold.
+Both signals score the registrable label (`paypal`) rather than the full
+domain (`paypal.com`), because the TLD is a shared constant that pushes
+cosine similarity up uniformly and eats into the distance budget without
+telling us anything about the brand.
+
+A candidate is flagged when it clears **both** thresholds. Cosine similarity
+from a general-purpose sentence embedding on short, out-of-distribution
+strings sits well above zero on unrelated pairs, so on its own it does
+little filtering; requiring the edit signal too keeps precision up. Pass
+`--any` to fall back to OR (flag on either threshold) if the noise is
+acceptable — for example when scanning for very short typosquats where the
+edit ratio is expected to be small enough that similarity is doing most of
+the work.
 
 Optionally, pass a reference URL (`-r`) for the real brand's homepage. SWAT
 fetches it once, then each flagged domain's own homepage, and scores content
@@ -83,11 +97,13 @@ uv run python3 -m swat -d example.com -o output.json
 |------|-------------|---------|
 | `-d` | Target domain (required). IDN targets are accepted and normalised to their A-label form. IP literals are rejected. | |
 | `-s` | Minimum cosine similarity to flag a candidate | `0.5` |
-| `-l` | Maximum Levenshtein distance to flag a candidate | `3` |
+| `-l`, `--max-edit-ratio` | Maximum normalised Levenshtein distance (`edit_distance / longer_label_length`, in `[0, 1]`) | `0.35` |
+| `--any` | Flag candidates that clear either threshold (default requires both) | off |
 | `-r` | Reference URL for content-similarity classification (optional) | none |
 | `-o` | Output file, or `stdout` | `stdout` |
 
-Sample output: [examples/output.json](examples/output.json)
+Output is JSON: `{"input_domain": ..., "results": [{"domain", "similarity",
+"levenshtein_distance", "levenshtein_ratio", (optional) "content_similarity"}]}`.
 
 ## Development
 

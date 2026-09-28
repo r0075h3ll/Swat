@@ -37,15 +37,18 @@ def _fake_model(sim_by_domain):
 
 
 def test_find_lookalikes_filters_sorts_and_normalizes_input(tmp_path):
+    """paypa1.com is a distance-1 typo on the 'paypal' label (ratio 1/6 ≈ 0.17)
+    and unrelated.com is neither similar nor close. --any preserves the original
+    OR-mode semantics this test was written against."""
     fake_ct_response = [
         {"common_name": "paypal.com", "name_value": "paypal.com"},
         {"common_name": "paypa1.com", "name_value": "paypa1.com"},
         {"common_name": "unrelated.com", "name_value": "unrelated.com"},
     ]
-    sim_by_domain = {"paypa1.com": 0.2, "unrelated.com": 0.1}
+    sim_by_domain = {"paypa1": 0.2, "unrelated": 0.1}
 
     parser = swat_main.build_parser()
-    args = parser.parse_args(["-d", "https://PayPal.com/login", "-s", "0.3", "-l", "2"])
+    args = parser.parse_args(["-d", "https://PayPal.com/login", "-s", "0.3", "-l", "0.2", "--any"])
 
     with (
         mock.patch("swat.__main__.get_ct_logs_for_label", return_value=fake_ct_response),
@@ -56,19 +59,24 @@ def test_find_lookalikes_filters_sorts_and_normalizes_input(tmp_path):
 
     assert result["input_domain"] == "paypal.com"
     assert result["results"] == [
-        {"domain": "paypa1.com", "similarity": 0.2, "levenshtein_distance": 1},
+        {
+            "domain": "paypa1.com",
+            "similarity": 0.2,
+            "levenshtein_distance": 1,
+            "levenshtein_ratio": 0.1667,
+        },
     ]
 
 
-def test_find_lookalikes_scores_against_the_registrable_domain():
+def test_find_lookalikes_scores_against_the_registrable_label():
     """A subdomain target is queried by its label, so it has to be scored by its
-    registrable domain too. Levenshtein counts characters, so scoring
-    "www.paypal.com" against "paypa1.com" gives 5, past the default of 3."""
+    label too. Scoring the full "www.paypal.com" against "paypa1.com" gives a
+    Levenshtein distance of 5; the label pair "paypal" vs "paypa1" gives 1."""
     fake_ct_response = [{"common_name": "paypa1.com", "name_value": "paypa1.com"}]
-    sim_by_domain = {"paypa1.com": 0.2}
+    sim_by_domain = {"paypa1": 0.6}
 
     parser = swat_main.build_parser()
-    args = parser.parse_args(["-d", "www.paypal.com", "-s", "0.3", "-l", "3"])
+    args = parser.parse_args(["-d", "www.paypal.com", "-s", "0.5"])
 
     with (
         mock.patch("swat.__main__.get_ct_logs_for_label", return_value=fake_ct_response),
@@ -79,7 +87,12 @@ def test_find_lookalikes_scores_against_the_registrable_domain():
 
     assert result["input_domain"] == "www.paypal.com"
     assert result["results"] == [
-        {"domain": "paypa1.com", "similarity": 0.2, "levenshtein_distance": 1},
+        {
+            "domain": "paypa1.com",
+            "similarity": 0.6,
+            "levenshtein_distance": 1,
+            "levenshtein_ratio": 0.1667,
+        },
     ]
 
 
@@ -99,9 +112,9 @@ def test_find_lookalikes_warns_but_does_not_crash_on_empty_crt_sh_response():
 
 def test_find_lookalikes_content_similarity_encodes_reference_once():
     fake_ct_response = [{"common_name": "evil.com", "name_value": "evil.com"}]
-    sim_by_domain = {"evil.com": 0.9}
+    sim_by_domain = {"evil": 0.9}
     parser = swat_main.build_parser()
-    args = parser.parse_args(["-d", "example.com", "-s", "0.5", "-r", "https://example.com"])
+    args = parser.parse_args(["-d", "example.com", "-s", "0.5", "--any", "-r", "https://example.com"])
 
     encode_calls = []
     model = _fake_model(sim_by_domain)
@@ -250,7 +263,7 @@ def test_find_lookalikes_drops_first_party_subdomains():
         {"common_name": "checkout.example.com", "name_value": "checkout.example.com"},
         {"common_name": "examp1e.com", "name_value": "examp1e.com"},
     ]
-    sim_by_domain = {"examp1e.com": 0.9}
+    sim_by_domain = {"examp1e": 0.9}
     parser = swat_main.build_parser()
     args = parser.parse_args(["-d", "example.com", "-s", "0.5"])
 
@@ -273,7 +286,7 @@ def test_find_lookalikes_ranks_by_content_similarity():
         {"common_name": "unreachable.com", "name_value": "unreachable.com"},
     ]
     # lookalike.com outscores clone.com on name alone; the page content reverses it.
-    sim_by_domain = {"lookalike.com": 0.9, "clone.com": 0.6, "unreachable.com": 0.7}
+    sim_by_domain = {"lookalike": 0.9, "clone": 0.6, "unreachable": 0.7}
     pages = {
         "https://example.com": "reference page",
         "lookalike.com": "barely related text",
@@ -282,7 +295,7 @@ def test_find_lookalikes_ranks_by_content_similarity():
     }
 
     parser = swat_main.build_parser()
-    args = parser.parse_args(["-d", "example.com", "-s", "0.5", "-r", "https://example.com"])
+    args = parser.parse_args(["-d", "example.com", "-s", "0.5", "--any", "-r", "https://example.com"])
     model = _fake_model(sim_by_domain)
 
     content_scores = {"lookalike.com": 0.11, "clone.com": 0.93, "unreachable.com": None}
@@ -308,3 +321,68 @@ def test_find_lookalikes_ranks_by_content_similarity():
         "lookalike.com",
         "unreachable.com",
     ]
+
+
+def test_default_requires_both_signals_and_any_falls_back_to_or():
+    """OR-of-thresholds lets the weaker signal set precision on its own, so a
+    candidate that clears only cosine similarity (with a label nothing like the
+    brand) is dropped in the default AND mode and restored under --any."""
+    fake_ct_response = [
+        {"common_name": "unrelated-brand-far-away.com", "name_value": "unrelated-brand-far-away.com"},
+    ]
+    # 0.6 clears the 0.5 similarity default; the label shares no characters
+    # with 'paypal' so the edit ratio is well past the 0.35 default.
+    sim_by_domain = {"unrelated-brand-far-away": 0.6}
+
+    parser = swat_main.build_parser()
+    default_args = parser.parse_args(["-d", "paypal.com"])
+    any_args = parser.parse_args(["-d", "paypal.com", "--any"])
+
+    def _run(args):
+        with (
+            mock.patch("swat.__main__.get_ct_logs_for_label", return_value=fake_ct_response),
+            mock.patch("swat.__main__.SentenceTransformer", return_value=_fake_model(sim_by_domain)),
+            mock.patch("swat.__main__.util", _FakeUtil()),
+        ):
+            return swat_main.find_lookalikes(args)
+
+    assert _run(default_args)["results"] == []
+    assert [r["domain"] for r in _run(any_args)["results"]] == ["unrelated-brand-far-away.com"]
+
+
+def test_edit_ratio_normalises_by_the_longer_label_length():
+    """A distance of 2 is roughly a third of a 6-character label and about a
+    tenth of a 20-character one. An absolute cap does not distinguish those
+    cases; a ratio cap does."""
+    fake_ct_response = [
+        # Distance 2 vs 'paypal' (length 6): ratio 2/6 ≈ 0.33
+        {"common_name": "paypa11.com", "name_value": "paypa11.com"},
+        # Distance 2 vs 'paypal' (candidate label 'paypalholdingsintl' length 18):
+        # ratio 12/18 ≈ 0.67 for the label pair, so it falls out even though
+        # it lives on 20 characters of shared context.
+        {"common_name": "paypalholdingsintl.com", "name_value": "paypalholdingsintl.com"},
+    ]
+    sim_by_domain = {"paypa11": 0.9, "paypalholdingsintl": 0.9}
+
+    parser = swat_main.build_parser()
+    args = parser.parse_args(["-d", "paypal.com"])
+
+    with (
+        mock.patch("swat.__main__.get_ct_logs_for_label", return_value=fake_ct_response),
+        mock.patch("swat.__main__.SentenceTransformer", return_value=_fake_model(sim_by_domain)),
+        mock.patch("swat.__main__.util", _FakeUtil()),
+    ):
+        result = swat_main.find_lookalikes(args)
+
+    flagged = {r["domain"]: r["levenshtein_ratio"] for r in result["results"]}
+    assert "paypa11.com" in flagged
+    assert flagged["paypa11.com"] < 0.35
+    assert "paypalholdingsintl.com" not in flagged
+
+
+def test_max_edit_ratio_rejects_out_of_range_values():
+    parser = swat_main.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["-d", "example.com", "-l", "3"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["-d", "example.com", "-l", "-0.1"])

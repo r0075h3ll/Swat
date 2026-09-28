@@ -24,11 +24,36 @@ def _domain_arg(raw: str) -> str:
         raise argparse.ArgumentTypeError(str(e)) from e
 
 
+def _ratio_arg(raw: str) -> float:
+    value = float(raw)
+    if not 0.0 <= value <= 1.0:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not in the [0, 1] range")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("-d", help="domain", dest="domain", required=True, type=_domain_arg)
     parser.add_argument("-s", help="similarity threshold (0-1)", dest="sim_thres", type=float, default=0.5)
-    parser.add_argument("-l", help="max levenshtein distance", dest="max_distance", type=int, default=3)
+    parser.add_argument(
+        "-l",
+        "--max-edit-ratio",
+        help="max normalised Levenshtein distance, expressed as edit_distance / "
+        "longer_label_length (0-1). Default catches a distance of 2 on a 6-character "
+        "label like 'paypal' but not on a 20-character one.",
+        dest="max_edit_ratio",
+        type=_ratio_arg,
+        default=0.35,
+    )
+    parser.add_argument(
+        "--any",
+        help="flag candidates that clear either threshold. Default is to require both, "
+        "since cosine similarity from a general-purpose sentence embedding on short "
+        "out-of-distribution strings sits well above zero and does little filtering "
+        "on its own.",
+        dest="match_any",
+        action="store_true",
+    )
     parser.add_argument(
         "-r",
         help="reference URL for content-similarity classification (fetches this and each "
@@ -44,12 +69,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def find_lookalikes(args: argparse.Namespace) -> dict:
     domain = args.domain
-    root_label = search_label(domain)
+    target_label = search_label(domain)
+    target_registrable = registrable_domain(domain)
 
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    logger.info(f"Querying crt.sh for certificates matching '{root_label}' and its split variants")
-    raw_logs = get_ct_logs_for_label(root_label)
+    logger.info(f"Querying crt.sh for certificates matching '{target_label}' and its split variants")
+    raw_logs = get_ct_logs_for_label(target_label)
 
     if not raw_logs:
         logger.warning(
@@ -65,30 +91,44 @@ def find_lookalikes(args: argparse.Namespace) -> dict:
     # Comparing registrable domains drops every first party name, not just the
     # exact target: www.example.com, api.example.com and checkout.example.com
     # all score high against the target precisely because they contain it.
-    target_registrable = registrable_domain(domain)
     candidates = [c for c in log_domains(raw_logs) if registrable_domain(c) != target_registrable]
 
     if not candidates:
         return {"input_domain": domain, "results": []}
 
-    # Score against the registrable domain, not the input, so it matches what
-    # the crt.sh query was built from. Levenshtein runs on raw character counts,
-    # so "www." alone pushes a distance-1 typosquat past the default threshold.
-    target_emb = model.encode(target_registrable)
-    candidate_embs = model.encode(candidates)
+    # Score labels, not full domains. The TLD is a shared constant that dilutes
+    # both signals: every .com candidate scores non-trivially against every .com
+    # target on cosine similarity, and every one shares four characters with the
+    # target on Levenshtein. And a distance-1 typosquat on "paypal" is a very
+    # different signal from a distance-1 near-miss on a 20-char label, so the
+    # distance is normalised by the longer of the two labels.
+    candidate_labels = [search_label(c) for c in candidates]
+
+    target_emb = model.encode(target_label)
+    candidate_embs = model.encode(candidate_labels)
     similarities = util.cos_sim(target_emb, candidate_embs)[0]
 
     results = []
-    for candidate, score in zip(candidates, similarities, strict=True):
+    for candidate, candidate_label, score in zip(candidates, candidate_labels, similarities, strict=True):
         similarity = score.item()
-        edit_distance = levenshtein_distance(target_registrable, candidate)
+        edit_distance = levenshtein_distance(target_label, candidate_label)
+        edit_ratio = edit_distance / max(len(target_label), len(candidate_label), 1)
 
-        if similarity >= args.sim_thres or edit_distance <= args.max_distance:
+        # Cosine similarity from a general-purpose sentence embedding on short,
+        # out-of-distribution strings sits well above zero on unrelated pairs,
+        # so on its own it does little filtering. The default requires both
+        # signals; --any restores the old OR behaviour for callers who want it.
+        sim_hit = similarity >= args.sim_thres
+        edit_hit = edit_ratio <= args.max_edit_ratio
+        flagged = sim_hit or edit_hit if args.match_any else sim_hit and edit_hit
+
+        if flagged:
             results.append(
                 {
                     "domain": candidate,
                     "similarity": round(similarity, 4),
                     "levenshtein_distance": edit_distance,
+                    "levenshtein_ratio": round(edit_ratio, 4),
                 }
             )
 
