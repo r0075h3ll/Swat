@@ -2,8 +2,9 @@ import threading
 import time
 from unittest import mock
 
-import ct_logger
 import requests
+
+from swat import ct_logger
 
 
 def test_split_variants_every_single_split_position():

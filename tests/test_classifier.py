@@ -1,7 +1,8 @@
 from unittest import mock
 
-import classifier
 import requests
+
+from swat import classifier
 
 
 class _FakeResponse:
@@ -20,7 +21,7 @@ def test_fetch_text_strips_tags_scripts_and_styles():
         "<body><script>alert(1)</script><h1>Welcome  to PayPal</h1>"
         "<p>Send money  fast.</p></body></html>"
     )
-    with mock.patch("classifier.requests.get", return_value=_FakeResponse(200, html)):
+    with mock.patch("swat.classifier.requests.get", return_value=_FakeResponse(200, html)):
         text = classifier.fetch_text("paypal.com")
 
     assert text == "Welcome to PayPal Send money fast."
@@ -35,7 +36,7 @@ def test_fetch_text_falls_back_from_https_to_http():
             raise requests.exceptions.ConnectionError("no https")
         return _FakeResponse(200, "<p>fallback content</p>")
 
-    with mock.patch("classifier.requests.get", side_effect=fake_get):
+    with mock.patch("swat.classifier.requests.get", side_effect=fake_get):
         text = classifier.fetch_text("parked-domain.com")
 
     assert calls == ["https://parked-domain.com", "http://parked-domain.com"]
@@ -43,23 +44,23 @@ def test_fetch_text_falls_back_from_https_to_http():
 
 
 def test_fetch_text_returns_none_when_both_schemes_fail():
-    with mock.patch("classifier.requests.get", side_effect=requests.exceptions.ConnectionError("dead")):
+    with mock.patch("swat.classifier.requests.get", side_effect=requests.exceptions.ConnectionError("dead")):
         assert classifier.fetch_text("dead-domain.com") is None
 
 
 def test_fetch_text_returns_none_on_empty_body():
-    with mock.patch("classifier.requests.get", return_value=_FakeResponse(200, "   <html></html>  ")):
+    with mock.patch("swat.classifier.requests.get", return_value=_FakeResponse(200, "   <html></html>  ")):
         assert classifier.fetch_text("empty.com") is None
 
 
 def test_fetch_text_uses_url_as_is_when_scheme_present():
-    with mock.patch("classifier.requests.get", return_value=_FakeResponse(200, "<p>hi</p>")) as mocked:
+    with mock.patch("swat.classifier.requests.get", return_value=_FakeResponse(200, "<p>hi</p>")) as mocked:
         classifier.fetch_text("https://example.com/page")
     mocked.assert_called_once_with("https://example.com/page", timeout=10)
 
 
 def test_content_similarity_returns_none_when_page_unreachable():
-    with mock.patch("classifier.fetch_text", return_value=None):
+    with mock.patch("swat.classifier.fetch_text", return_value=None):
         result = classifier.content_similarity(
             model=object(), reference_embedding=object(), domain="dead.com"
         )
@@ -86,8 +87,8 @@ def test_content_similarity_only_encodes_the_page_text_not_the_reference():
             return _Score()
 
     with (
-        mock.patch("classifier.fetch_text", return_value="page text"),
-        mock.patch("classifier.util", FakeUtil()),
+        mock.patch("swat.classifier.fetch_text", return_value="page text"),
+        mock.patch("swat.classifier.util", FakeUtil()),
     ):
         score = classifier.content_similarity(FakeModel(), "reference-embedding", "domain.com")
 

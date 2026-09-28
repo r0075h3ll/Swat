@@ -1,4 +1,4 @@
-from levenshtein import distance
+from swat.levenshtein import distance
 
 
 def test_identical_strings():

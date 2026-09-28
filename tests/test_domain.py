@@ -1,5 +1,6 @@
 import pytest
-from domain import normalize_domain
+
+from swat.domain import normalize_domain
 
 
 @pytest.mark.parametrize(

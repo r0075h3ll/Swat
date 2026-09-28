@@ -1,13 +1,20 @@
 import argparse
 import json
+import logging
+import sys
 
-import classifier
-from ct_logger import get_ct_logs_for_label, log_domains
-from domain import normalize_domain
-from levenshtein import distance as levenshtein_distance
 from sentence_transformers import SentenceTransformer, util
 
-from . import logger
+from . import classifier, logger
+from .ct_logger import get_ct_logs_for_label, log_domains
+from .domain import normalize_domain
+from .levenshtein import distance as levenshtein_distance
+
+# Handler setup lives in the entry point, not the package, so importing swat
+# never reconfigures logging for whoever imported it.
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    logger.addHandler(logging.StreamHandler(sys.stderr))
 
 
 def _domain_arg(raw: str) -> str:
