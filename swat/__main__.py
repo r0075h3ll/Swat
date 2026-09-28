@@ -7,7 +7,7 @@ from sentence_transformers import SentenceTransformer, util
 
 from . import classifier, logger
 from .ct_logger import get_ct_logs_for_label, log_domains
-from .domain import normalize_domain, search_label
+from .domain import normalize_domain, registrable_domain, search_label
 from .levenshtein import distance as levenshtein_distance
 
 # Handler setup lives in the entry point, not the package, so importing swat
@@ -61,20 +61,27 @@ def find_lookalikes(args: argparse.Namespace) -> dict:
             "lookalikes."
         )
 
-    candidates = log_domains(raw_logs)
-    candidates = [c for c in candidates if c != domain]
+    # A crt.sh query for a brand returns mostly that brand's own certificates.
+    # Comparing registrable domains drops every first party name, not just the
+    # exact target: www.example.com, api.example.com and checkout.example.com
+    # all score high against the target precisely because they contain it.
+    target_registrable = registrable_domain(domain)
+    candidates = [c for c in log_domains(raw_logs) if registrable_domain(c) != target_registrable]
 
     if not candidates:
         return {"input_domain": domain, "results": []}
 
-    target_emb = model.encode(domain)
+    # Score against the registrable domain, not the input, so it matches what
+    # the crt.sh query was built from. Levenshtein runs on raw character counts,
+    # so "www." alone pushes a distance-1 typosquat past the default threshold.
+    target_emb = model.encode(target_registrable)
     candidate_embs = model.encode(candidates)
     similarities = util.cos_sim(target_emb, candidate_embs)[0]
 
     results = []
     for candidate, score in zip(candidates, similarities, strict=True):
         similarity = score.item()
-        edit_distance = levenshtein_distance(domain, candidate)
+        edit_distance = levenshtein_distance(target_registrable, candidate)
 
         if similarity >= args.sim_thres or edit_distance <= args.max_distance:
             results.append(
@@ -84,8 +91,6 @@ def find_lookalikes(args: argparse.Namespace) -> dict:
                     "levenshtein_distance": edit_distance,
                 }
             )
-
-    results.sort(key=lambda r: (-r["similarity"], r["levenshtein_distance"]))
 
     if args.reference_url:
         reference_text = classifier.fetch_text(args.reference_url)
@@ -100,6 +105,20 @@ def find_lookalikes(args: argparse.Namespace) -> dict:
                 result["content_similarity"] = classifier.content_similarity(
                     model, reference_embedding, result["domain"]
                 )
+
+    # Ranked after the enrichment above, not before it: content similarity is
+    # the strongest signal available that a domain is actively impersonating the
+    # brand, so a live clone should outrank a name that merely looks similar.
+    # Candidates with no content score sort last, then the name-based signals
+    # break ties.
+    results.sort(
+        key=lambda r: (
+            r.get("content_similarity") is None,
+            -(r.get("content_similarity") or 0.0),
+            -r["similarity"],
+            r["levenshtein_distance"],
+        )
+    )
 
     return {"input_domain": domain, "results": results}
 

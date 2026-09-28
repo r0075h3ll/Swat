@@ -79,3 +79,11 @@ def search_label(domain: str) -> str:
         return extracted.domain
     labels = domain.split(".")
     return labels[-2] if len(labels) >= 2 else labels[0]
+
+
+def registrable_domain(domain: str) -> str:
+    """The public-suffix-aware registrable domain: 'www.paypal.com' -> 'paypal.com'.
+
+    Falls back to the input unchanged when the TLD is not in the list.
+    """
+    return _extract(domain).top_domain_under_public_suffix or domain

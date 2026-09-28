@@ -60,6 +60,29 @@ def test_find_lookalikes_filters_sorts_and_normalizes_input(tmp_path):
     ]
 
 
+def test_find_lookalikes_scores_against_the_registrable_domain():
+    """A subdomain target is queried by its label, so it has to be scored by its
+    registrable domain too. Levenshtein counts characters, so scoring
+    "www.paypal.com" against "paypa1.com" gives 5, past the default of 3."""
+    fake_ct_response = [{"common_name": "paypa1.com", "name_value": "paypa1.com"}]
+    sim_by_domain = {"paypa1.com": 0.2}
+
+    parser = swat_main.build_parser()
+    args = parser.parse_args(["-d", "www.paypal.com", "-s", "0.3", "-l", "3"])
+
+    with (
+        mock.patch("swat.__main__.get_ct_logs_for_label", return_value=fake_ct_response),
+        mock.patch("swat.__main__.SentenceTransformer", return_value=_fake_model(sim_by_domain)),
+        mock.patch("swat.__main__.util", _FakeUtil()),
+    ):
+        result = swat_main.find_lookalikes(args)
+
+    assert result["input_domain"] == "www.paypal.com"
+    assert result["results"] == [
+        {"domain": "paypa1.com", "similarity": 0.2, "levenshtein_distance": 1},
+    ]
+
+
 def test_find_lookalikes_warns_but_does_not_crash_on_empty_crt_sh_response():
     parser = swat_main.build_parser()
     args = parser.parse_args(["-d", "example.com"])
@@ -215,3 +238,73 @@ def test_total_crtsh_failure_exits_non_zero_without_printing_results():
     )
     assert result.returncode == 1, result.stderr
     assert result.stdout.strip() == "", f"stdout carried a result: {result.stdout!r}"
+
+
+def test_find_lookalikes_drops_first_party_subdomains():
+    """A crt.sh query for a brand returns mostly the brand's own certificates.
+    Only the bare target used to be dropped, so www/api/checkout all scored high."""
+    fake_ct_response = [
+        {"common_name": "example.com", "name_value": "example.com"},
+        {"common_name": "www.example.com", "name_value": "www.example.com"},
+        {"common_name": "api.example.com", "name_value": "api.example.com"},
+        {"common_name": "checkout.example.com", "name_value": "checkout.example.com"},
+        {"common_name": "examp1e.com", "name_value": "examp1e.com"},
+    ]
+    sim_by_domain = {"examp1e.com": 0.9}
+    parser = swat_main.build_parser()
+    args = parser.parse_args(["-d", "example.com", "-s", "0.5"])
+
+    with (
+        mock.patch("swat.__main__.get_ct_logs_for_label", return_value=fake_ct_response),
+        mock.patch("swat.__main__.SentenceTransformer", return_value=_fake_model(sim_by_domain)),
+        mock.patch("swat.__main__.util", _FakeUtil()),
+    ):
+        result = swat_main.find_lookalikes(args)
+
+    assert [r["domain"] for r in result["results"]] == ["examp1e.com"]
+
+
+def test_find_lookalikes_ranks_by_content_similarity():
+    """content_similarity is the strongest impersonation signal available, so it
+    has to affect ordering. It used to be attached after the sort and ignored."""
+    fake_ct_response = [
+        {"common_name": "lookalike.com", "name_value": "lookalike.com"},
+        {"common_name": "clone.com", "name_value": "clone.com"},
+        {"common_name": "unreachable.com", "name_value": "unreachable.com"},
+    ]
+    # lookalike.com outscores clone.com on name alone; the page content reverses it.
+    sim_by_domain = {"lookalike.com": 0.9, "clone.com": 0.6, "unreachable.com": 0.7}
+    pages = {
+        "https://example.com": "reference page",
+        "lookalike.com": "barely related text",
+        "clone.com": "the exact same wording as the real brand homepage",
+        "unreachable.com": None,
+    }
+
+    parser = swat_main.build_parser()
+    args = parser.parse_args(["-d", "example.com", "-s", "0.5", "-r", "https://example.com"])
+    model = _fake_model(sim_by_domain)
+
+    content_scores = {"lookalike.com": 0.11, "clone.com": 0.93, "unreachable.com": None}
+
+    def fake_content_similarity(_model, _reference, domain):
+        return content_scores[domain]
+
+    with (
+        mock.patch("swat.__main__.get_ct_logs_for_label", return_value=fake_ct_response),
+        mock.patch("swat.__main__.SentenceTransformer", return_value=model),
+        mock.patch("swat.__main__.util", _FakeUtil()),
+        mock.patch("swat.classifier.fetch_text", side_effect=lambda url: pages.get(url)),
+        mock.patch("swat.classifier.util", _FakeUtil()),
+        mock.patch(
+            "swat.classifier.content_similarity",
+            side_effect=lambda _m, _r, domain: fake_content_similarity(None, None, domain),
+        ),
+    ):
+        result = swat_main.find_lookalikes(args)
+
+    assert [r["domain"] for r in result["results"]] == [
+        "clone.com",
+        "lookalike.com",
+        "unreachable.com",
+    ]

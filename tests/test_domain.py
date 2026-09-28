@@ -1,6 +1,6 @@
 import pytest
 
-from swat.domain import normalize_domain, search_label
+from swat.domain import normalize_domain, registrable_domain, search_label
 
 
 @pytest.mark.parametrize(
@@ -100,3 +100,20 @@ def test_rejects_ipv6_literal_with_the_same_specific_message():
 )
 def test_search_label_returns_registrable_label(domain, expected):
     assert search_label(domain) == expected
+
+
+@pytest.mark.parametrize(
+    ("domain", "expected"),
+    [
+        ("example.com", "example.com"),
+        ("www.example.com", "example.com"),
+        ("a.b.c.example.com", "example.com"),
+        ("sub.example.co.uk", "example.co.uk"),
+        ("example.com.br", "example.com.br"),
+        ("xn--e1afmkfd.xn--p1ai", "xn--e1afmkfd.xn--p1ai"),
+        # Unknown TLD: no registrable domain to reduce to, so the host stands.
+        ("example.zzzzz", "example.zzzzz"),
+    ],
+)
+def test_registrable_domain(domain, expected):
+    assert registrable_domain(domain) == expected
