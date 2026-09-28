@@ -13,8 +13,9 @@ cert for, since ~2013. Its identity search is unreliable for a single
 unbroken word (`examplebrand`) but consistent for a real word-boundary
 split (`example brand`). Since a domain label has no spaces, SWAT takes the
 registrable label of the target (`paypal` for `www.paypal.com`), then queries
-crt.sh with it plus every single-split variant, up to 5 at a time, and merges
-every response that succeeds. Then it ranks the results:
+crt.sh with it plus every single-split variant, capped at 16 queries and 5 in
+flight at a time, and merges every response that succeeds. Then it ranks the
+results:
 
 - **Cosine similarity** (sentence embeddings) catches semantically close
   names that don't share characters.
@@ -44,9 +45,10 @@ own search form.
 - **No date filtering, no pagination.** A query returns everything since CT
   logging began, in one response, or fails outright, no date parameter and
   no page/offset/cursor exists.
-- **Unverifiable ceiling on huge successful queries.** SWAT reads the full
-  response body; whether crt.sh itself silently caps very large result sets
-  isn't something we can confirm from outside their system.
+- **Unverifiable ceiling on huge successful queries.** SWAT reads the body of any
+  response whose `Content-Length` it accepts, and caps the rest; whether crt.sh
+  itself silently caps very large result sets isn't something we can confirm
+  from outside their system.
 
 ## Install
 

@@ -192,3 +192,26 @@ def test_importing_swat_leaves_the_root_logger_alone():
         cwd=REPO_ROOT,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.slow
+def test_total_crtsh_failure_exits_non_zero_without_printing_results():
+    """A lookup that never reached crt.sh must not be reported as a clean empty
+    result: exit non zero, and print nothing that a caller could read as 'no lookalikes'."""
+    script = (
+        "import sys; sys.path.insert(0, '.')\n"
+        "from unittest import mock\n"
+        "import runpy\n"
+        "from swat import ct_logger\n"
+        "with mock.patch.object(ct_logger, 'get_ct_logs', side_effect=RuntimeError('down')):\n"
+        "    sys.argv = ['swat', '-d', 'example.com']\n"
+        "    runpy.run_module('swat', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 1, result.stderr
+    assert result.stdout.strip() == "", f"stdout carried a result: {result.stdout!r}"
