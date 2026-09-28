@@ -7,7 +7,7 @@ from sentence_transformers import SentenceTransformer, util
 
 from . import classifier, logger
 from .ct_logger import get_ct_logs_for_label, log_domains
-from .domain import normalize_domain
+from .domain import normalize_domain, search_label
 from .levenshtein import distance as levenshtein_distance
 
 # Handler setup lives in the entry point, not the package, so importing swat
@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def find_lookalikes(args: argparse.Namespace) -> dict:
     domain = args.domain
-    root_label = domain.split(".")[0]
+    root_label = search_label(domain)
 
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
