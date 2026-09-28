@@ -97,8 +97,8 @@ def test_find_lookalikes_content_similarity_encodes_reference_once():
         mock.patch("swat.__main__.get_ct_logs_for_label", return_value=fake_ct_response),
         mock.patch("swat.__main__.SentenceTransformer", return_value=model),
         mock.patch("swat.__main__.util", _FakeUtil()),
-        mock.patch("classifier.fetch_text", side_effect=fake_fetch_text),
-        mock.patch("classifier.util", _FakeUtil()),
+        mock.patch("swat.classifier.fetch_text", side_effect=fake_fetch_text),
+        mock.patch("swat.classifier.util", _FakeUtil()),
     ):
         result = swat_main.find_lookalikes(args)
 
@@ -160,7 +160,7 @@ def test_stdout_output_contains_no_log_noise():
     """Regression test for the stdout/stderr logging-contamination bug: log lines must
     never land on stdout, since that's the one thing -o stdout is supposed to guarantee."""
     script = (
-        "import sys; sys.path.insert(0, '.'); sys.path.insert(0, 'swat')\n"
+        "import sys; sys.path.insert(0, '.')\n"
         "from unittest import mock\n"
         "import swat.__main__ as m\n"
         "with mock.patch('swat.__main__.get_ct_logs_for_label', return_value=[]):\n"
@@ -173,3 +173,22 @@ def test_stdout_output_contains_no_log_noise():
         cwd=REPO_ROOT,
     )
     assert json.loads(result.stdout) == {"input_domain": "example.com", "results": []}
+
+
+@pytest.mark.slow
+def test_importing_swat_leaves_the_root_logger_alone():
+    """Regression test: importing swat must not reconfigure logging for the whole process."""
+    script = (
+        "import logging\n"
+        "handlers, level = list(logging.getLogger().handlers), logging.getLogger().level\n"
+        "import swat\n"
+        "assert list(logging.getLogger().handlers) == handlers, 'root handlers changed'\n"
+        "assert logging.getLogger().level == level, 'root level changed'\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stderr
