@@ -1,4 +1,5 @@
 import email.utils
+import json as _json
 import threading
 import time
 from unittest import mock
@@ -18,10 +19,15 @@ def test_split_variants_single_char_has_no_variants():
 
 
 class _FakeResponse:
-    def __init__(self, status_code=200, body=None, headers=None):
+    def __init__(self, status_code=200, body=None, headers=None, chunks=None):
         self.status_code = status_code
         self._body = body
+        # Explicit chunks let a test emit a chunked, no-Content-Length body of
+        # any size. Absent, the body is JSON-serialised and yielded as one
+        # chunk, which is enough for the happy path.
+        self._chunks = chunks
         self.headers = headers or {}
+        self.iter_started = False
 
     def __enter__(self):
         return self
@@ -33,10 +39,14 @@ class _FakeResponse:
         if self.status_code >= 400:
             raise requests.exceptions.HTTPError(f"{self.status_code} error")
 
-    def json(self):
+    def iter_content(self, _chunk_size):
+        self.iter_started = True
+        if self._chunks is not None:
+            yield from self._chunks
+            return
         if self._body is None:
             raise ValueError("empty body")
-        return self._body
+        yield _json.dumps(self._body).encode()
 
 
 def test_get_ct_logs_returns_on_first_success():
@@ -168,51 +178,54 @@ def test_retry_after_rejects_nan():
     assert ct_logger._retry_after_seconds("nan") == ct_logger.RATE_LIMIT_BACKOFF_SECONDS
 
 
-class _OrderTrackingResponse(_FakeResponse):
-    """Records whether the body was pulled before the size cap ran."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.body_read = False
-
-    def json(self):
-        self.body_read = True
-        return super().json()
-
-
-def test_get_ct_logs_checks_the_size_cap_before_reading_the_body():
-    """stream=True is not the property that matters on its own. What matters is
-    that _reject_oversized runs before json() pulls the body into memory."""
-    response = _OrderTrackingResponse(200, [{"id": 1}])
-
+def test_get_ct_logs_uses_streaming_mode():
+    """The body is bounded by counting bytes off iter_content, which only works
+    when requests is not asked to buffer the response whole."""
+    response = _FakeResponse(200, [{"id": 1}])
     with mock.patch.object(ct_logger.session, "get", return_value=response) as mocked:
         assert ct_logger.get_ct_logs("q", max_retries=0) == [{"id": 1}]
-
     assert mocked.call_args.kwargs["stream"] is True
-    assert response.body_read is True, "the body should be read once the cap has passed"
 
 
-def test_get_ct_logs_never_reads_the_body_when_it_is_oversized():
-    response = _OrderTrackingResponse(
-        200, [{"id": 1}], {"Content-Length": str(ct_logger.MAX_RESPONSE_BYTES + 1)}
-    )
-
+def test_get_ct_logs_rejects_a_chunked_oversized_response():
+    """crt.sh returns wildcard queries chunked with no Content-Length header.
+    A header check cannot bound those responses, and the wildcard is exactly
+    the query the cap exists for. The byte-count loop off iter_content is
+    what makes the cap effective for that case."""
+    # One chunk over the cap: any implementation that only checked
+    # Content-Length would sail past this and json.loads the whole body.
+    over_cap = b"X" * (ct_logger.MAX_RESPONSE_BYTES + 1)
+    response = _FakeResponse(200, chunks=[over_cap])
     with (
         mock.patch.object(ct_logger.session, "get", return_value=response),
-        pytest.raises(RuntimeError, match="over the"),
+        pytest.raises(RuntimeError, match="exceeded"),
     ):
         ct_logger.get_ct_logs("q", max_retries=0, backoff_seconds=0.01)
 
-    assert response.body_read is False, "an over-cap body must never be buffered"
 
+def test_get_ct_logs_aborts_mid_stream_once_the_cap_is_crossed():
+    """The loop must stop as soon as the running total crosses the cap. A body
+    big enough to matter is never fully buffered."""
+    chunk_size = 1024
+    # A little more than 8 MiB worth of 1 KiB chunks, so the cap will trip
+    # before the iterator is exhausted.
+    n_chunks = (ct_logger.MAX_RESPONSE_BYTES // chunk_size) + 100
+    yielded = {"n": 0}
 
-def test_get_ct_logs_rejects_an_oversized_response():
-    huge = {"Content-Length": str(ct_logger.MAX_RESPONSE_BYTES + 1)}
+    def chunk_stream():
+        for _ in range(n_chunks):
+            yielded["n"] += 1
+            yield b"X" * chunk_size
+
+    response = _FakeResponse(200, chunks=chunk_stream())
     with (
-        mock.patch.object(ct_logger.session, "get", return_value=_FakeResponse(200, [{"id": 1}], huge)),
-        pytest.raises(RuntimeError, match="over the"),
+        mock.patch.object(ct_logger.session, "get", return_value=response),
+        pytest.raises(RuntimeError, match="exceeded"),
     ):
         ct_logger.get_ct_logs("q", max_retries=0, backoff_seconds=0.01)
+
+    # Reader should stop the first chunk past the cap, not drain to the end.
+    assert yielded["n"] < n_chunks, "iter_content should be aborted once the cap is crossed"
 
 
 def test_get_ct_logs_for_label_keeps_entries_with_a_null_id():

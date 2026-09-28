@@ -25,6 +25,11 @@ from swat.domain import normalize_domain, registrable_domain, search_label
         ("straße.de", "xn--strae-oqa.de"),
         ("ẞ.de", "xn--zca.de"),
         ("ς.gr", "xn--3xa.gr"),
+        # Registered ASCII hostnames that IDNA2008 refuses (rule forbidding '--'
+        # in positions 3-4 of a non-'xn--' label). Pure-ASCII hosts skip idna
+        # entirely so this stays accepted.
+        ("ex--ample.com", "ex--ample.com"),
+        ("a--b.example.com", "a--b.example.com"),
     ],
 )
 def test_normalizes_to_bare_domain(raw, expected):
@@ -64,6 +69,15 @@ def test_rejects_ip_literal_with_a_specific_message():
         normalize_domain("1.2.3.4")
 
 
+def test_rejects_ipv6_literal_with_the_same_specific_message():
+    """urlsplit strips the brackets, so the host reaching the validators is
+    just '::1' with no bracket context. It has to be recognised as an IP
+    before the label validators see it and raise the generic 'not a fully
+    qualified domain' message."""
+    with pytest.raises(ValueError, match=r"is an IP address"):
+        normalize_domain("[::1]")
+
+
 @pytest.mark.parametrize(
     ("domain", "expected"),
     [
@@ -75,8 +89,13 @@ def test_rejects_ip_literal_with_a_specific_message():
         ("example.co.uk", "example"),
         ("example-brand.com", "example-brand"),
         ("xn--e1afmkfd.xn--p1ai", "xn--e1afmkfd"),
-        # TLD the public suffix list does not know: fall back to the leading label.
+        # TLDs the public suffix list does not know. tldextract calls the last
+        # label the "domain" when the suffix is empty, which would give the
+        # wrong label for anything past two labels; fall back to the
+        # second-to-last label so the brand comes out instead.
         ("example.zzzzz", "example"),
+        ("www.paypal.invalidtld", "paypal"),
+        ("a.b.paypal.invalidtld", "paypal"),
     ],
 )
 def test_search_label_returns_registrable_label(domain, expected):

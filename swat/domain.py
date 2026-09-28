@@ -34,20 +34,29 @@ def normalize_domain(raw: str) -> str:
 
     host = host.rstrip(".")
 
-    try:
-        # idna.encode(uts46=True), not str.encode("idna"). The stdlib codec is
-        # IDNA2003 and rewrites labels: faß.de becomes fass.de, so the tool
-        # would monitor a different domain than the one asked for.
-        host = idna.encode(host, uts46=True).decode("ascii")
-    except idna.IDNAError:
-        raise ValueError(f"{original!r} {_INVALID}") from None
-
+    # IP-address check runs first: urlsplit strips the brackets from a v6
+    # literal, so '::1' reaches idna.encode looking like a malformed label and
+    # the specific "is an IP address" message would never fire.
     try:
         ipaddress.ip_address(host)
     except ValueError:
         pass
     else:
         raise ValueError(f"{original!r} is an IP address, not a domain name")
+
+    # IDNA2008 is stricter than the letter-digit-hyphen rule an ASCII host has
+    # to obey anyway: it forbids '--' in the third and fourth position of a
+    # non-'xn--' label, so 'ex--ample.com' is a registered, resolvable domain
+    # that IDNA2008 refuses. Pure-ASCII hosts don't need Unicode processing at
+    # all, so skip idna for them and lean on _DOMAIN_RE for structure.
+    if not host.isascii():
+        try:
+            # idna.encode(uts46=True), not str.encode("idna"). The stdlib codec
+            # is IDNA2003 and rewrites labels: faß.de becomes fass.de, so the
+            # tool would monitor a different domain than the one asked for.
+            host = idna.encode(host, uts46=True).decode("ascii")
+        except idna.IDNAError:
+            raise ValueError(f"{original!r} {_INVALID}") from None
 
     if not _DOMAIN_RE.match(host):
         raise ValueError(f"{original!r} {_INVALID}")
@@ -58,11 +67,18 @@ def normalize_domain(raw: str) -> str:
 def search_label(domain: str) -> str:
     """The registrable label to hand crt.sh, e.g. 'www.paypal.com' -> 'paypal'.
 
-    Falls back to the leading label when the public suffix list does not
-    recognise the TLD, which is all splitting on '.' could do anyway.
+    On an unknown TLD (public suffix list has no matching suffix), tldextract
+    treats the last label as the "domain" and the rest as "subdomain", which
+    would give 'invalidtld' for 'www.paypal.invalidtld' and reproduce exactly
+    the bug of picking the wrong label. Falls back to the second-to-last label
+    of the input instead, which is a better guess and matches the shape the
+    public-suffix path returns.
     """
-    registrable = registrable_domain(domain)
-    return registrable.partition(".")[0] or domain.split(".")[0]
+    extracted = _extract(domain)
+    if extracted.suffix:
+        return extracted.domain
+    labels = domain.split(".")
+    return labels[-2] if len(labels) >= 2 else labels[0]
 
 
 def registrable_domain(domain: str) -> str:
