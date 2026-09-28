@@ -23,8 +23,12 @@ MAX_RETRY_AFTER_SECONDS = 60
 MAX_QUERY_VARIANTS = 16
 
 # crt.sh has no pagination, so "%shortlabel%" can match a large share of all
-# CT. Trust Content-Length to keep that from landing in memory whole.
+# CT. The cap is enforced by counting bytes off iter_content rather than by
+# trusting Content-Length: crt.sh serves the wildcard queries this exists to
+# bound chunked (Transfer-Encoding: chunked, no Content-Length), so a header
+# check is structurally unable to reject the responses it was written for.
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_READ_CHUNK_BYTES = 8192
 
 # crt.sh is unreliable for a single unbroken token (e.g. "examplebrand") but
 # far more reliable for space-separated multi-word queries (e.g. "example
@@ -64,17 +68,20 @@ def _retry_after_seconds(header: str) -> float:
     return min(max(seconds, 0.0), MAX_RETRY_AFTER_SECONDS)
 
 
-def _reject_oversized(response: requests.Response) -> None:
-    """crt.sh serves every match for a query in one body, so a short label can
-    come back enormous. Callers must stream the response, otherwise the body is
-    already buffered by the time this runs. A missing or bogus Content-Length is
-    left alone rather than guessed at, since crt.sh sets it accurately and a lie
-    is not the failure mode worth engineering for here."""
-    content_length = response.headers.get("Content-Length")
-    if content_length and content_length.isdigit() and int(content_length) > MAX_RESPONSE_BYTES:
-        raise requests.exceptions.RequestException(
-            f"crt.sh response is {content_length} bytes, over the {MAX_RESPONSE_BYTES} byte cap"
-        )
+def _read_bounded(response: requests.Response) -> bytes:
+    """Read the response body up to MAX_RESPONSE_BYTES, raising if it exceeds
+    the cap. Streams through iter_content and aborts mid-stream, so a chunked
+    response (no Content-Length) is bounded the same way a header-bearing one
+    is, and json.loads only ever sees a buffer that already fits."""
+    buffer = bytearray()
+    for chunk in response.iter_content(_READ_CHUNK_BYTES):
+        if chunk:
+            buffer.extend(chunk)
+        if len(buffer) > MAX_RESPONSE_BYTES:
+            raise requests.exceptions.RequestException(
+                f"crt.sh response exceeded the {MAX_RESPONSE_BYTES} byte cap"
+            )
+    return bytes(buffer)
 
 
 def get_ct_logs(
@@ -91,9 +98,9 @@ def get_ct_logs(
         sleep_seconds = 0.0
 
         try:
-            # stream=True so _reject_oversized sees the headers before requests
-            # has buffered the body. Without it the cap only rejects a response
-            # that is already in memory.
+            # stream=True so the body is not buffered before _read_bounded gets
+            # to count it: iter_content yields chunks as they arrive and the
+            # loop aborts as soon as the running total crosses the cap.
             with session.get(
                 CRT_SH_URL, params={"q": query, "output": "json"}, timeout=30, stream=True
             ) as response:
@@ -108,8 +115,7 @@ def get_ct_logs(
                     continue
 
                 response.raise_for_status()
-                _reject_oversized(response)
-                return response.json()
+                return json.loads(_read_bounded(response))
         except (requests.exceptions.RequestException, ValueError) as e:
             last_error = e
             sleep_seconds = backoff_seconds * 2**attempt
