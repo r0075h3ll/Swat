@@ -1,4 +1,4 @@
-﻿# SWAT
+# SWAT
 
 Monitor CT logs for brand abuse using semantic search.
 
@@ -34,7 +34,7 @@ from a general-purpose sentence embedding on short, out-of-distribution
 strings sits well above zero on unrelated pairs, so on its own it does
 little filtering; requiring the edit signal too keeps precision up. Pass
 `--any` to fall back to OR (flag on either threshold) if the noise is
-acceptable â€” for example when scanning for very short typosquats where the
+acceptable — for example when scanning for very short typosquats where the
 edit ratio is expected to be small enough that similarity is doing most of
 the work.
 
@@ -42,7 +42,7 @@ Independently of the thresholds, a candidate whose hostname contains the
 target label as a substring is flagged and marked `brand_in_hostname: true`.
 `paypal-secure.evil.com` scores as `evil` against `paypal` under label-only
 comparison and fails both thresholds, but the brand token is right there in
-the SAN â€” brand-in-subdomain is one of the most common shapes in CT SAN
+the SAN — brand-in-subdomain is one of the most common shapes in CT SAN
 lists, and a CT-log monitor exists to catch it.
 
 Optionally, pass a reference URL (`-r`) for the real brand's homepage. SWAT
