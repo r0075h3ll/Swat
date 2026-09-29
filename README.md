@@ -113,23 +113,9 @@ Output is JSON: `{"input_domain": ..., "results": [{"domain", "similarity",
 "levenshtein_distance", "levenshtein_ratio", "brand_in_hostname", (optional)
 "content_similarity"}]}`.
 
-## Development
-
-```
-uv run ruff check .
-uv run ruff format .
-uv run pytest
-```
-
-Run all three before committing. CI runs the same on every push and pull
-request to `main`.
-
 ## Roadmap
 
 - Option to choose between different embedding models
 - Replace the `-r` content-similarity heuristic with a classifier actually
   trained on brand data
 
-## License
-
-[MIT](LICENSE)
