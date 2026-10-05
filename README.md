@@ -1,5 +1,11 @@
 # SWAT
 
+> [!NOTE]
+> Active development has moved to a private fork. The scoring engine and
+> discovery pipeline are being reworked. crt.sh, the only free CT log search
+> with substring matching, runs at roughly 42% monthly uptime, and the new
+> version hardens around that. Changes will land here once stable.
+
 Monitor CT logs for brand abuse using semantic search.
 
 SWAT pulls newly issued certificates from crt.sh for a target domain, then
