@@ -65,7 +65,7 @@ def normalize_domain(raw: str) -> str:
 
 
 def search_label(domain: str) -> str:
-    """The registrable label to hand crt.sh, e.g. 'www.paypal.com' -> 'paypal'.
+    """The registrable label to hand crt.name, e.g. 'www.paypal.com' -> 'paypal'.
 
     On an unknown TLD (public suffix list has no matching suffix), tldextract
     treats the last label as the "domain" and the rest as "subdomain", which
